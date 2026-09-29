@@ -1,0 +1,6 @@
+import './style.css';
+
+document.querySelector('#app').innerHTML = `
+  <h1>presentExs</h1>
+  <p>Platform presentasi ringan. Coming soon.</p>
+`;
