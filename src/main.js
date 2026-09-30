@@ -6,6 +6,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { host } from './transport.js';
 import { makeMessage, CMD_CHANNEL, isAction } from './protocol.js';
+import { createSubtitle } from './subtitle.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorker;
 
@@ -429,6 +430,13 @@ document.addEventListener('fullscreenchange', () => {
 let transport = null;
 let blackout = false;
 const bc = new BroadcastChannel(CMD_CHANNEL); // sinkron dgn tab receiver
+const subtitles = createSubtitle(document.body);
+
+// Label perintah utk toast feedback di layar PC
+const VOICE_LABELS = {
+  next: 'Slide berikutnya', prev: 'Slide sebelumnya',
+  blackout: 'Layar hitam', present: 'Mulai presentasi', exit: 'Keluar',
+};
 
 function remoteState() {
   return {
@@ -446,9 +454,15 @@ function publishState() {
   bc.postMessage({ v: 1, type: 'state', from: 'viewer', payload: st });
 }
 
-/** Eksekusi aksi remote (dipakai jalur PeerJS maupun relay receiver). */
-function applyRemoteAction(action, payload = {}) {
+/** Eksekusi aksi remote (dipakai jalur PeerJS, relay receiver, maupun voice). */
+function applyRemoteAction(action, payload = {}, opts = {}) {
   console.log('[Viewer] Remote action:', action, payload);
+
+  // Toast konfirmasi di layar PC utk perintah suara
+  if (opts.voice) {
+    const label = action === 'goto' ? `Ke slide ${payload.page}` : VOICE_LABELS[action];
+    if (label) subtitles.feedback(action, payload);
+  }
 
   switch (action) {
     case 'blackout':
@@ -481,6 +495,12 @@ function applyRemoteAction(action, payload = {}) {
   publishState();
 }
 
+// ============================================================
+// VOICE: tombol mic di HP menekan "🎤" → kirim 'voice' (transkrip)
+// + 'cmd' (aksi). Viewer TIDAK menjalankan SpeechRecognition —
+// semua recognition terjadi di HP, PC hanya merender subtitle.
+// ============================================================
+
 function startHost(code) {
   if (transport) transport.destroy();
   transport = host(code, {
@@ -501,6 +521,14 @@ function startHost(code) {
     onMessage: (msg, reply) => {
       if (msg.type === 'cmd' && isAction(msg.payload.action)) {
         applyRemoteAction(msg.payload.action, msg.payload);
+      } else if (msg.type === 'voice') {
+        // Transkrip dari HP → subtitle live di layar presentasi.
+        // Perintahnya sendiri sudah dieksekusi HP sbg 'cmd' terpisah;
+        // di sini kita hanya merender teks + feedback "✓ ...".
+        subtitles.show(msg.payload.text, !!msg.payload.final);
+        if (msg.payload.final && msg.payload.intent) {
+          subtitles.feedback(msg.payload.intent.action, msg.payload.intent);
+        }
       } else if (msg.type === 'hello') {
         // HP memperkenalkan diri → balas dengan state terkini
         reply(makeMessage('state', 'viewer', remoteState()));

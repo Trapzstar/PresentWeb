@@ -13,6 +13,8 @@ import './styles/components.css';
 import './styles/mobile.css';
 import { join } from './transport.js';
 import { makeMessage } from './protocol.js';
+import { createVoice } from './voice-command.js';
+import { matchIntent } from './intents.js';
 
 const roomLabel  = document.getElementById('roomLabel');
 const statusEl   = document.getElementById('status');
@@ -25,6 +27,8 @@ const logEl      = document.getElementById('log');
 const progressEl = document.getElementById('progress');
 const slideInfoEl = document.getElementById('slideInfo');
 const swipeHintEl  = document.getElementById('swipeHint');
+const btnMic       = document.getElementById('btnMic');
+const captionEl    = document.getElementById('caption');
 
 // ---- Baca room code dari URL ----
 const params = new URLSearchParams(location.search);
@@ -103,6 +107,84 @@ btnPrev.addEventListener('click', () => send('prev'));
 btnNext.addEventListener('click', () => send('next'));
 btnPresent.addEventListener('click', () => send('present'));
 btnExit.addEventListener('click', () => send('exit'));
+
+// ============================================================
+// VOICE COMMAND + LIVE CAPTION (dari HP ke PC)
+// ------------------------------------------------------------
+// interim  → kirim sebagai 'voice' (subtitle live di layar PC)
+// final    → matchIntent() → 'cmd' bila dikenali (+ vibrate),
+//            tetap dikirim sbg 'voice' final biar subtitle utuh.
+// ============================================================
+let captionTimer = null;
+
+function showCaption(text, isFinal) {
+  if (!captionEl) return;
+  captionEl.textContent = text;
+  captionEl.classList.toggle('final', !!isFinal);
+  captionEl.hidden = false;
+  clearTimeout(captionTimer);
+  if (isFinal) captionTimer = setTimeout(() => { captionEl.hidden = true; }, 4000);
+}
+
+let lastSentFinal = '';   // dedup: jangan kirim kalimat final yg sama 2x
+
+function sendVoice(text, extra = {}) {
+  if (!client.isOpen()) return;
+  if (extra.final) {
+    if (text.trim() === lastSentFinal.trim()) return;
+    lastSentFinal = text;
+  }
+  client.send(makeMessage('voice', 'phone', { text, ...extra }));
+}
+
+const voice = createVoice({
+  onTranscript: (text, isFinal) => {
+    showCaption(text, isFinal);
+    sendVoice(text, { final: isFinal });
+  },
+  onCommand: (text) => {
+    const intent = matchIntent(text);
+    if (!intent) return null;
+    // kirim intent menempel di pesan 'voice' final → PC tampilkan
+    // toast "✓ Slide berikutnya" SEKALI saja (cmd biasa tanpa toast)
+    sendVoice(text, { final: true, intent });
+    send(intent.action, intent.page ? { page: intent.page } : {});
+    log(`🎤 "${text.trim()}" → ${intent.action}${intent.page ? ' p.' + intent.page : ''}`);
+    if (navigator.vibrate) navigator.vibrate([30, 30, 30]); // sukses dikenali
+    return intent;
+  },
+  onError: (err) => log('Mic: ' + err.message),
+  onState: (s) => {
+    btnMic.classList.toggle('recording', s === 'on');
+    btnMic.setAttribute('aria-pressed', s === 'on' ? 'true' : 'false');
+    btnMic.querySelector('.mic-label').textContent =
+      s === 'on' ? 'Mendengarkan…' : s === 'denied' ? 'Mic ditolak' : s === 'unsupported' ? 'Tidak didukung' : 'Perintah suara';
+  },
+});
+
+if (!voice.supported && btnMic) {
+  btnMic.classList.add('fallback');
+  btnMic.querySelector('.mic-label').textContent = 'Simulasi suara';
+}
+
+btnMic.addEventListener('click', () => {
+  if (voice.supported) {
+    voice.toggle();
+    return;
+  }
+  // Fallback tanpa mic: ketik perintah (untuk demo / browser non-Chrome)
+  const text = prompt('Ketik perintah (mis. "slide berikutnya", "ke slide 5", "layar hitam"):');
+  if (!text) return;
+  showCaption(text, true);
+  const intent = matchIntent(text);
+  sendVoice(text, intent ? { final: true, intent } : { final: true });
+  if (intent) {
+    send(intent.action, intent.page ? { page: intent.page } : {});
+    log(`⌨️ "${text}" → ${intent.action}`);
+  } else {
+    log(`⌨️ "${text}" → (tidak dikenali)`);
+  }
+});
 
 // ---- Swipe kiri/kanan untuk ganti slide ----
 let touchX = null;

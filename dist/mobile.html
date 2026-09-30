@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="theme-color" content="#ECF0F3">
   <title>Remote Presenter — presentExs</title>
-  <script type="module" crossorigin src="/assets/mobile-CIoKdpco.js"></script>
-  <link rel="modulepreload" crossorigin href="/assets/protocol-CL7sqx7B.js">
-  <link rel="modulepreload" crossorigin href="/assets/transport-DrDKLWTK.js">
+  <script type="module" crossorigin src="/assets/mobile-DxmMQ4V-.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/protocol-xcSH04QF.js">
+  <link rel="modulepreload" crossorigin href="/assets/transport-CajVNiA4.js">
   <link rel="stylesheet" crossorigin href="/assets/protocol-DxQbpWFS.css">
-  <link rel="stylesheet" crossorigin href="/assets/mobile-BOoftrkW.css">
+  <link rel="stylesheet" crossorigin href="/assets/mobile-g2N-y6iv.css">
 </head>
 <body class="page-mobile">
   <div id="app">
@@ -38,6 +38,16 @@
       <button class="btn-action primary" id="btnPresent">▶ Mulai</button>
       <button class="btn-action danger" id="btnExit" disabled>⏹ Keluar</button>
     </div>
+
+    <!-- Voice command: mic di HP (dekat presenter), transkrip → PC -->
+    <button class="btn-mic" id="btnMic" aria-pressed="false"
+            title="Nyalakan perintah suara: 'slide berikutnya', 'ke slide 5', 'layar hitam'">
+      <span class="mic-icon" aria-hidden="true">🎤</span>
+      <span class="mic-label">Perintah suara</span>
+    </button>
+    <p class="voice-hint">Coba ucap: “slide berikutnya” · “ke slide 5” · “layar hitam” · “mulai presentasi”</p>
+
+    <div class="caption-preview" id="caption" hidden></div>
 
     <div class="log" id="log" aria-hidden="true"></div>
   </div>

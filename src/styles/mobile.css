@@ -185,3 +185,66 @@
   box-shadow: var(--shadow-in);
   padding: var(--space-3);
 }
+
+/* ---------- Voice command (mic button + caption preview) ---------- */
+.page-mobile .btn-mic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 56px;
+  margin-top: var(--space-4);
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-out);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: box-shadow .2s ease, transform .1s ease;
+}
+.page-mobile .btn-mic:active {
+  box-shadow: var(--shadow-in);
+  transform: scale(.98);
+}
+.page-mobile .btn-mic .mic-icon { font-size: var(--fs-xl); }
+
+/* Status "mendengarkan": pulse halus agar jelas mic aktif */
+.page-mobile .btn-mic.recording {
+  box-shadow: var(--shadow-in), 0 0 0 3px rgba(76, 175, 125, .35);
+  animation: pe-mic-pulse 1.6s ease-in-out infinite;
+}
+.page-mobile .btn-mic.recording .mic-label { color: #2e9e5b; }
+@keyframes pe-mic-pulse {
+  0%, 100% { box-shadow: var(--shadow-in), 0 0 0 2px rgba(76, 175, 125, .25); }
+  50%      { box-shadow: var(--shadow-in), 0 0 0 6px rgba(76, 175, 125, .45); }
+}
+
+.page-mobile .voice-hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* Preview transkrip di HP (mirror dari subtitle PC) */
+.page-mobile .caption-preview {
+  margin-top: var(--space-3);
+  min-height: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  box-shadow: var(--shadow-in);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  word-break: break-word;
+}
+.page-mobile .caption-preview.final {
+  color: var(--text);
+  font-style: normal;
+}
