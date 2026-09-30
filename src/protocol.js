@@ -26,7 +26,7 @@ export function isMessage(msg) {
 }
 
 /** Daftar aksi remote yang dikenal viewer. */
-export const ACTIONS = new Set(['next', 'prev', 'goto', 'blackout', 'present', 'exit']);
+export const ACTIONS = new Set(['next', 'prev', 'goto', 'blackout', 'present', 'exit', 'voice']);
 
 /** Payload minimal per aksi (validasi ringan di sisi penerima). */
 export function isAction(a) {

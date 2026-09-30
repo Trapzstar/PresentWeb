@@ -34,6 +34,16 @@
       <button class="btn-action danger" id="btnExit" disabled>⏹ Keluar</button>
     </div>
 
+    <!-- Voice command: mic di HP (dekat presenter), transkrip → PC -->
+    <button class="btn-mic" id="btnMic" aria-pressed="false"
+            title="Nyalakan perintah suara: 'slide berikutnya', 'ke slide 5', 'layar hitam'">
+      <span class="mic-icon" aria-hidden="true">🎤</span>
+      <span class="mic-label">Perintah suara</span>
+    </button>
+    <p class="voice-hint">Coba ucap: “slide berikutnya” · “ke slide 5” · “layar hitam” · “mulai presentasi”</p>
+
+    <div class="caption-preview" id="caption" hidden></div>
+
     <div class="log" id="log" aria-hidden="true"></div>
   </div>
 
