@@ -1,0 +1,1980 @@
+From ddb7bcba9608cc39eb1f775b47f7398abdee1659 Mon Sep 17 00:00:00 2001
+From: "qwen.ai[bot]" <qwenlm-intl@service.alibaba.com>
+Date: Wed, 30 Sep 2026 03:34:03 +0000
+Subject: [PATCH] refactor: viewer jadi host PeerJS langsung, protocol v1 +
+ state 2-arah, styling remote HP
+
+- transport.js: abstraksi PeerJS (host dgn retry ID-taben, join dgn auto-reconnect backoff)
+- protocol.js: envelope pesan {v,type,from,payload} (hello/cmd/state/code)
+- main.js: viewer klaim presentexs-KODE, publish state ke HP, blackout remote, ?room= recovery
+- receiver.js: tidak lagi rebut peer ID; display QR sinkron via BroadcastChannel + relay fallback dgn buffer
+- mobile.js/css: UX remote penuh (progress bar slide, swipe, debounce tap, safe-area, tombol besar)
+- perbaiki judul halaman tertukar, hapus repomix-output.xml, tambah README
+---
+ .gitignore            |   1 +
+ README.md             |  46 +++
+ mobile.html           |  25 +-
+ receiver.html         |   7 +-
+ repomix-output.xml    | 817 ------------------------------------------
+ src/main.js           | 114 +++++-
+ src/mobile.js         | 155 ++++----
+ src/protocol.js       |  34 ++
+ src/receiver.js       | 144 ++++----
+ src/styles/mobile.css | 187 ++++++++++
+ src/styles/viewer.css |  11 +-
+ src/transport.js      | 185 ++++++++++
+ 12 files changed, 752 insertions(+), 974 deletions(-)
+ create mode 100644 README.md
+ delete mode 100644 repomix-output.xml
+ create mode 100644 src/protocol.js
+ create mode 100644 src/transport.js
+
+diff --git a/.gitignore b/.gitignore
+index a547bf3..85100cf 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -22,3 +22,4 @@ dist-ssr
+ *.njsproj
+ *.sln
+ *.sw?
++repomix-output.xml
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..00f3e2b
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,46 @@
++# presentExs
++
++Viewer presentasi berbasis web: kontrol dari 2 device (PC presenter + HP remote),
++ringan (vanilla JS + Vite MPA, tanpa framework).
++
++## Menjalankan
++
++```bash
++npm install
++npm run dev      # https://localhost:5173 (self-signed SSL — dibutuhkan untuk fullscreen/wake-lock/mic)
++```
++
++## Alur Pakai
++
++1. **PC** — buka `/` (Viewer), drop/unggah PDF. Viewer otomatis menjadi *host* PeerJS `presentexs-<KODE>`.
++2. **PC** — buka `/receiver.html` di tab lain untuk menampilkan kode room + QR (sinkron otomatis dengan Viewer via BroadcastChannel).
++3. **HP** — scan QR → `/mobile.html?room=<KODE>` → remote terhubung langsung ke Viewer (WebRTC peer-to-peer).
++4. Tekan **▶ Mulai Presentasi** di PC (fullscreen butuh user gesture di perangkat itu sendiri), lalu navigasi dari HP: tombol ←/→, swipe, atau perintah remote lain.
++
++## Arsitektur (`src/`)
++
++| File | Peran |
++|---|---|
++| `protocol.js` | Envelope pesan v1: `{v,type,from,payload}`; tipe: `hello`, `cmd`, `state`, `code`, `request-code` |
++| `transport.js` | Abstraksi PeerJS: `host()` (retry ID-taben, multi-koneksi) & `join()` (auto-reconnect backoff) |
++| `main.js` | Viewer: render PDF (pdfjs), fullscreen+wake-lock, **host remote**, publish state dua-arah |
++| `receiver.js` | Halaman info sesi: QR + kode sinkron viewer, relay cadangan bila HP connect sebelum viewer siap |
++| `mobile.js` | Remote HP: kirim `cmd`, render `state` (progress bar, halaman aktif), swipe, vibrate |
++
++```
++HP (mobile.html) ──WebRTC──▶ Viewer (index.html = host "presentexs-KODE")
++                                   ▲ BroadcastChannel (kode/state/cmd)
++                             Receiver (receiver.html = display QR + relay fallback)
++```
++
++**State dua arah:** setiap perubahan halaman/fullscreen/blackout di PC dikirim balik ke HP
++(`{page,total,fullscreen,blackout}`), sehingga remote selalu mencerminkan layar sebenarnya.
++
++## Aksi Remote yang Didukung
++`next` · `prev` · `goto(page)` · `present` · `exit` · `blackout` (layar hitam saat diskusi)
++
++## Roadmap
++- [ ] Voice command (Web Speech API `id-ID` di HP → kirim transkrip sebagai `cmd`; fallback Porcupine)
++- [ ] Live subtitle (reuse pipeline) voice yang sama + overlay `aria-live` di viewer
++- [ ] Progressive/range PDF loading untuk file sangat besar
++- [ ] Deploy HTTPS produksi (Cloudflare Tunnel / Let's Encrypt)
+diff --git a/mobile.html b/mobile.html
+index 85ec8ac..e5552d8 100644
+--- a/mobile.html
++++ b/mobile.html
+@@ -4,32 +4,39 @@
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+   <meta name="theme-color" content="#ECF0F3">
+-  <title>Remote — presentExs</title>
++  <title>Remote Presenter — presentExs</title>
+ </head>
+ <body class="page-mobile">
+   <div id="app">
+-    <h1>Remote Control</h1>
++    <h1>🎤 Remote Presenter</h1>
+ 
+     <div class="room-info">
+       <span class="label">Room</span>
+       <span class="value" id="roomLabel">------</span>
+     </div>
+ 
+-    <div class="status" id="status">Menghubungkan...</div>
++    <div class="status" id="status" role="status" aria-live="polite">Menghubungkan...</div>
++
++    <div class="progress-wrap" id="progress" hidden>
++      <div class="slide-info" id="slideInfo">– / –</div>
++      <div class="progress" aria-hidden="true"><div class="bar"></div></div>
++    </div>
+ 
+     <div class="controls" id="controls" style="display:none;">
+-      <button class="btn-nav" id="btnPrev" aria-label="Previous">←</button>
+-      <button class="btn-nav" id="btnNext" aria-label="Next">→</button>
++      <button class="btn-nav" id="btnPrev" aria-label="Slide sebelumnya">←</button>
++      <button class="btn-nav" id="btnNext" aria-label="Slide berikutnya">→</button>
+     </div>
+ 
++    <p class="swipe-hint" id="swipeHint">💡 Geser layar ke kiri/kanan untuk ganti slide</p>
++
+     <div class="controls">
+-      <button class="btn-action primary" id="btnPresent">Mulai</button>
+-      <button class="btn-action danger" id="btnExit">Keluar</button>
++      <button class="btn-action primary" id="btnPresent">▶ Mulai</button>
++      <button class="btn-action danger" id="btnExit" disabled>⏹ Keluar</button>
+     </div>
+ 
+-    <div class="log" id="log"></div>
++    <div class="log" id="log" aria-hidden="true"></div>
+   </div>
+ 
+   <script type="module" src="/src/mobile.js"></script>
+ </body>
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/receiver.html b/receiver.html
+index 193cf17..51e8346 100644
+--- a/receiver.html
++++ b/receiver.html
+@@ -3,11 +3,11 @@
+ <head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-  <title>Remote HP — presentExs</title>
++  <title>Info Sesi (QR) — presentExs</title>
+ </head>
+ <body class="page-receiver">
+   <div id="app">
+-    <h1>Remote HP</h1>
++    <h1>Info Sesi</h1>
+ 
+     <div class="code-box">
+       <div class="label">Kode Room</div>
+@@ -15,6 +15,7 @@
+     </div>
+ 
+     <canvas id="qrCanvas"></canvas>
++    <p style="opacity:.7;font-size:13px">Scan QR dengan HP sebagai remote presenter.<br>Halaman ini sinkron otomatis dengan tab Viewer.</p>
+ 
+     <div class="status" id="status">Memuat...</div>
+     <div class="log" id="log"></div>
+@@ -22,4 +23,4 @@
+ 
+   <script type="module" src="/src/receiver.js"></script>
+ </body>
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/repomix-output.xml b/repomix-output.xml
+deleted file mode 100644
+index eaa2e74..0000000
+--- a/repomix-output.xml
++++ /dev/null
+@@ -1,817 +0,0 @@
+-This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+-
+-<file_summary>
+-This section contains a summary of this file.
+-
+-<purpose>
+-This file contains a packed representation of the entire repository's contents.
+-It is designed to be easily consumable by AI systems for analysis, code review,
+-or other automated processes.
+-</purpose>
+-
+-<file_format>
+-The content is organized as follows:
+-1. This summary section
+-2. Repository information
+-3. Directory structure
+-4. Repository files (if enabled)
+-5. Multiple file entries, each consisting of:
+-  - File path as an attribute
+-  - Full contents of the file
+-</file_format>
+-
+-<usage_guidelines>
+-- This file should be treated as read-only. Any changes should be made to the
+-  original repository files, not this packed version.
+-- When processing this file, use the file path to distinguish
+-  between different files in the repository.
+-- Be aware that this file may contain sensitive information. Handle it with
+-  the same level of security as you would the original repository.
+-</usage_guidelines>
+-
+-<notes>
+-- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+-- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+-- Files matching patterns in .gitignore are excluded
+-- Files matching default ignore patterns are excluded
+-- Files are sorted by Git change count (files with more changes are at the bottom)
+-</notes>
+-
+-</file_summary>
+-
+-<directory_structure>
+-src/
+-  main.js
+-  mobile.js
+-  receiver.js
+-  style.css
+-.gitignore
+-index.html
+-mobile.html
+-package.json
+-receiver.html
+-vite.config.js
+-</directory_structure>
+-
+-<files>
+-This section contains the contents of the repository's files.
+-
+-<file path="src/mobile.js">
+-import './style.css';
+-import Peer from 'peerjs';
+-
+-const ROOM_PREFIX = 'presentexs-';
+-
+-const roomLabel = document.getElementById('roomLabel');
+-const statusEl = document.getElementById('status');
+-const controls = document.getElementById('controls');
+-const btnPrev = document.getElementById('btnPrev');
+-const btnNext = document.getElementById('btnNext');
+-const btnPresent = document.getElementById('btnPresent');
+-const btnExit = document.getElementById('btnExit');
+-const logEl = document.getElementById('log');
+-
+-// ---- Baca room code dari URL ----
+-const params = new URLSearchParams(location.search);
+-const room = params.get('room');
+-
+-if (!room || !/^\d{6}$/.test(room)) {
+-  statusEl.textContent = '❌ Kode room tidak valid. Buka dari QR atau tambahkan ?room=XXXXXX';
+-  throw new Error('Invalid room');
+-}
+-
+-roomLabel.textContent = room;
+-console.log('[Mobile] Room:', room);
+-
+-// ---- Init PeerJS ----
+-const peer = new Peer({
+-  debug: 2,
+-  config: {
+-    iceServers: [
+-      { urls: 'stun:stun.l.google.com:19302' },
+-      { urls: 'stun:stun1.l.google.com:19302' },
+-    ],
+-  },
+-});
+-
+-let conn = null;
+-
+-peer.on('open', (id) => {
+-  console.log('[Mobile] ✓ PeerJS online. My ID:', id);
+-  statusEl.textContent = 'Menghubungkan ke PC...';
+-
+-  // Connect ke PC
+-  conn = peer.connect(ROOM_PREFIX + room, { reliable: true });
+-
+-  conn.on('open', () => {
+-    console.log('[Mobile] ✓ Connected to PC');
+-    statusEl.textContent = '✓ Terhubung';
+-    statusEl.classList.add('ok');
+-    controls.style.display = 'flex';
+-    log('Terhubung ke PC');
+-  });
+-
+-  conn.on('data', (data) => {
+-    console.log('[Mobile] Received:', data);
+-    if (data.type === 'hello') {
+-      log('PC siap menerima perintah');
+-    }
+-  });
+-
+-  conn.on('close', () => {
+-    console.log('[Mobile] Connection closed');
+-    statusEl.textContent = '⚠ Koneksi terputus';
+-    statusEl.classList.remove('ok');
+-    statusEl.classList.add('err');
+-    controls.style.display = 'none';
+-  });
+-
+-  conn.on('error', (err) => {
+-    console.error('[Mobile] Connection error:', err);
+-    log('Error: ' + err.message);
+-  });
+-});
+-
+-peer.on('error', (err) => {
+-  console.error('[Mobile] PeerJS error:', err);
+-  if (err.type === 'peer-unavailable') {
+-    statusEl.textContent = '❌ PC tidak ditemukan. Cek kode room.';
+-  } else {
+-    statusEl.textContent = `❌ ${err.type}: ${err.message}`;
+-  }
+-  statusEl.classList.add('err');
+-});
+-
+-// ---- Kirim perintah ----
+-function send(action) {
+-  if (!conn || !conn.open) {
+-    log('⚠ Belum terhubung');
+-    return;
+-  }
+-  conn.send({ action });
+-  console.log('[Mobile] Sent:', action);
+-  log('→ ' + action);
+-  if (navigator.vibrate) navigator.vibrate(20);
+-}
+-
+-// ---- Event handlers ----
+-btnPrev.addEventListener('click', () => send('prev'));
+-btnNext.addEventListener('click', () => send('next'));
+-btnPresent.addEventListener('click', () => send('present'));
+-btnExit.addEventListener('click', () => send('exit'));
+-
+-// ---- Log helper ----
+-function log(msg) {
+-  const t = new Date().toLocaleTimeString();
+-  logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent;
+-}
+-</file>
+-
+-<file path="src/receiver.js">
+-import './style.css';
+-import QRCode from 'qrcode';
+-import Peer from 'peerjs';
+-
+-const ROOM_PREFIX = 'presentexs-';
+-
+-const roomCodeEl = document.getElementById('roomCode');
+-const qrCanvas = document.getElementById('qrCanvas');
+-const statusEl = document.getElementById('status');
+-const logEl = document.getElementById('log');
+-
+-// ---- Generate room code 6 digit ----
+-const code = String(Math.floor(100000 + Math.random() * 900000));
+-roomCodeEl.textContent = code;
+-console.log('[Receiver] Room code:', code);
+-
+-// ---- Generate QR ----
+-// URL yang akan dibuka HP
+-const mobileUrl = `${location.origin}/mobile.html?room=${code}`;
+-console.log('[Receiver] Mobile URL:', mobileUrl);
+-
+-QRCode.toCanvas(qrCanvas, mobileUrl, { width: 240 }, (err) => {
+-  if (err) {
+-    console.error('[Receiver] QR error:', err);
+-    statusEl.textContent = '❌ Gagal generate QR';
+-    return;
+-  }
+-  statusEl.textContent = 'Menunggu HP scan QR...';
+-});
+-
+-// ---- Init PeerJS ----
+-const peerId = ROOM_PREFIX + code;
+-console.log('[Receiver] Peer ID:', peerId);
+-
+-const peer = new Peer(peerId, {
+-  debug: 2,
+-  config: {
+-    iceServers: [
+-      { urls: 'stun:stun.l.google.com:19302' },
+-      { urls: 'stun:stun1.l.google.com:19302' },
+-    ],
+-  },
+-});
+-
+-peer.on('open', (id) => {
+-  console.log('[Receiver] ✓ PeerJS online:', id);
+-  statusEl.textContent = `✓ Siap. Menunggu HP scan...`;
+-});
+-
+-peer.on('error', (err) => {
+-  console.error('[Receiver] PeerJS error:', err);
+-  statusEl.textContent = `❌ ${err.type}: ${err.message}`;
+-});
+-
+-peer.on('connection', (conn) => {
+-  console.log('[Receiver] HP connected:', conn.peer);
+-  statusEl.textContent = `✓ HP terhubung: ${conn.peer}`;
+-
+-  conn.on('open', () => {
+-    console.log('[Receiver] Connection open');
+-    log('HP siap kirim perintah');
+-  });
+-
+-  conn.on('data', (data) => {
+-  console.log('[Receiver] Received:', data);
+-  log('Diterima: ' + JSON.stringify(data));
+-
+-  // Teruskan ke tab viewer via BroadcastChannel
+-  if (data.action) {
+-    const bc = new BroadcastChannel('presentexs-cmd');
+-    bc.postMessage({ action: data.action });
+-    bc.close();
+-    console.log('[Receiver] → forwarded to viewer:', data.action);
+-  }
+-});
+-
+-  conn.on('close', () => {
+-    console.log('[Receiver] HP disconnected');
+-    statusEl.textContent = 'Menunggu HP scan...';
+-    log('HP terputus');
+-  });
+-});
+-
+-// ---- Simple log helper ----
+-function log(msg) {
+-  const t = new Date().toLocaleTimeString();
+-  const line = `[${t}] ${msg}`;
+-  logEl.textContent = line + '\n' + logEl.textContent;
+-}
+-</file>
+-
+-<file path="mobile.html">
+-<!DOCTYPE html>
+-<html lang="id">
+-<head>
+-  <meta charset="UTF-8">
+-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+-  <meta name="theme-color" content="#ECF0F3">
+-  <title>Remote — presentExs</title>
+-</head>
+-<body>
+-  <div id="app">
+-    <h1>Remote Control</h1>
+-
+-    <div class="room-info">
+-      <span class="label">Room</span>
+-      <span class="value" id="roomLabel">------</span>
+-    </div>
+-
+-    <div class="status" id="status">Menghubungkan...</div>
+-
+-    <div class="controls" id="controls" style="display:none;">
+-      <button class="btn-nav" id="btnPrev" aria-label="Previous">←</button>
+-      <button class="btn-nav" id="btnNext" aria-label="Next">→</button>
+-    </div>
+-
+-    <div class="controls">
+-      <button class="btn-action primary" id="btnPresent">Mulai</button>
+-      <button class="btn-action danger" id="btnExit">Keluar</button>
+-    </div>
+-
+-    <div class="log" id="log"></div>
+-  </div>
+-
+-  <script type="module" src="/src/mobile.js"></script>
+-</body>
+-</html>
+-</file>
+-
+-<file path="receiver.html">
+-<!DOCTYPE html>
+-<html lang="id">
+-<head>
+-  <meta charset="UTF-8">
+-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-  <title>Remote HP — presentExs</title>
+-</head>
+-<body>
+-  <div id="app">
+-    <h1>Remote HP</h1>
+-
+-    <div class="code-box">
+-      <div class="label">Kode Room</div>
+-      <div class="code" id="roomCode">------</div>
+-    </div>
+-
+-    <canvas id="qrCanvas"></canvas>
+-
+-    <div class="status" id="status">Memuat...</div>
+-    <div class="log" id="log"></div>
+-  </div>
+-
+-  <script type="module" src="/src/receiver.js"></script>
+-</body>
+-</html>
+-</file>
+-
+-<file path="vite.config.js">
+-import { defineConfig } from 'vite';
+-// 1. Import plugin SSL di bagian atas
+-import basicSsl from '@vitejs/plugin-basic-ssl';
+-
+-export default defineConfig({
+-  // 2. Masukkan ke dalam array plugins
+-  plugins: [
+-    basicSsl()
+-  ],
+-  build: {
+-    rollupOptions: {
+-      input: {
+-        main: 'index.html',
+-        receiver: 'receiver.html',
+-        mobile: 'mobile.html', 
+-      },
+-    },
+-  },
+-  // 3. Tambahkan konfigurasi server (Opsional, memastikan port tetap 5173)
+-  server: {
+-    port: 5173
+-  }
+-});
+-</file>
+-
+-<file path="src/style.css">
+-#app {
+-  text-align: center;
+-  padding: 20px;
+-}
+-
+-#viewer {
+-  display: flex;
+-  justify-content: center;
+-  align-items: center;
+-  margin-top: 20px;
+-  width: 100%;
+-}
+-
+-#pdfCanvas {
+-  border: 1px solid #ccc;
+-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+-  max-width: 100%;
+-}
+-
+-#viewer:fullscreen {
+-  background: #000;
+-  display: flex;
+-  justify-content: center;
+-  align-items: center;
+-}
+-
+-/* Receiver page */
+-.code-box {
+-  background: #2D3436;
+-  color: #fff;
+-  padding: 20px 32px;
+-  border-radius: 12px;
+-  margin: 20px auto;
+-  display: inline-block;
+-}
+-
+-.code-box .label {
+-  font-size: 12px;
+-  opacity: 0.7;
+-  text-transform: uppercase;
+-  letter-spacing: 1px;
+-}
+-
+-.code-box .code {
+-  font-family: 'Courier New', monospace;
+-  font-size: 42px;
+-  font-weight: 700;
+-  letter-spacing: 8px;
+-  color: #FF8A4C;
+-  margin-top: 4px;
+-}
+-
+-#qrCanvas {
+-  display: block;
+-  margin: 20px auto;
+-  border-radius: 12px;
+-  background: #fff;
+-  padding: 10px;
+-}
+-
+-.status {
+-  font-size: 14px;
+-  margin-top: 20px;
+-  color: #555;
+-}
+-
+-.log {
+-  font-family: 'Courier New', monospace;
+-  font-size: 12px;
+-  text-align: left;
+-  max-width: 500px;
+-  margin: 20px auto;
+-  white-space: pre-wrap;
+-  color: #666;
+-}
+-
+-/* Mobile page */
+-body {
+-  background: #ECF0F3;
+-  font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+-  margin: 0;
+-  padding: 16px;
+-  text-align: center;
+-  user-select: none;
+-  -webkit-tap-highlight-color: transparent;
+-}
+-
+-#app h1 {
+-  font-size: 18px;
+-  margin: 0 0 20px;
+-  color: #2D3436;
+-}
+-
+-.room-info {
+-  background: #2D3436;
+-  color: #fff;
+-  border-radius: 12px;
+-  padding: 12px 20px;
+-  display: inline-block;
+-  margin-bottom: 20px;
+-}
+-
+-.room-info .label {
+-  font-size: 11px;
+-  opacity: 0.7;
+-  text-transform: uppercase;
+-  letter-spacing: 1px;
+-  margin-right: 8px;
+-}
+-
+-.room-info .value {
+-  font-family: 'Courier New', monospace;
+-  font-size: 20px;
+-  font-weight: 700;
+-  color: #FF8A4C;
+-  letter-spacing: 3px;
+-}
+-
+-.status {
+-  font-size: 14px;
+-  color: #666;
+-  margin-bottom: 24px;
+-  padding: 10px;
+-}
+-
+-.status.ok { color: #34D399; font-weight: 600; }
+-.status.err { color: #FF5C5C; font-weight: 600; }
+-
+-.controls {
+-  display: flex;
+-  gap: 12px;
+-  justify-content: center;
+-  margin-bottom: 16px;
+-}
+-
+-.btn-nav {
+-  width: 120px;
+-  height: 120px;
+-  border: none;
+-  border-radius: 24px;
+-  background: #ECF0F3;
+-  color: #2D3436;
+-  font-size: 48px;
+-  font-weight: 300;
+-  cursor: pointer;
+-  box-shadow: 6px 6px 12px rgba(163,177,198,0.6), -6px -6px 12px rgba(255,255,255,0.9);
+-  transition: all 0.08s;
+-}
+-
+-.btn-nav:active {
+-  box-shadow: inset 6px 6px 12px rgba(163,177,198,0.6), inset -6px -6px 12px rgba(255,255,255,0.9);
+-  transform: scale(0.97);
+-}
+-
+-.btn-action {
+-  flex: 1;
+-  padding: 16px;
+-  border: none;
+-  border-radius: 12px;
+-  font-size: 15px;
+-  font-weight: 600;
+-  cursor: pointer;
+-  font-family: inherit;
+-  max-width: 180px;
+-}
+-
+-.btn-action.primary {
+-  background: #FF8A4C;
+-  color: #fff;
+-  box-shadow: 0 4px 12px rgba(255,138,76,0.4);
+-}
+-
+-.btn-action.danger {
+-  background: #ECF0F3;
+-  color: #FF5C5C;
+-  box-shadow: 4px 4px 8px rgba(163,177,198,0.6), -4px -4px 8px rgba(255,255,255,0.9);
+-}
+-
+-.btn-action:active { transform: scale(0.97); }
+-
+-.log {
+-  font-family: 'Courier New', monospace;
+-  font-size: 11px;
+-  text-align: left;
+-  max-width: 400px;
+-  margin: 20px auto;
+-  white-space: pre-wrap;
+-  color: #888;
+-  max-height: 120px;
+-  overflow-y: auto;
+-}
+-
+-/* Ketika browser masuk ke mode layar penuh, sembunyikan elemen teks dan tombol input */
+-:fullscreen h1, 
+-:fullscreen #pdfInput, 
+-:fullscreen #status {
+-  display: none !important;
+-}
+-
+-/* Buat area presentasi PDF memenuhi 100% layar komputer tanpa margin */
+-:fullscreen #viewer {
+-  width: 100vw !important;
+-  height: 100vh !important;
+-  margin: 0 !important;
+-  padding: 0 !important;
+-  display: flex;
+-  justify-content: center;
+-  align-items: center;
+-  background-color: #000; /* Memberikan latar belakang hitam standar presentasi */
+-}
+-
+-/* Sembunyikan kontrol navigasi di layar penuh jika Anda mengendalikannya penuh secara remote */
+-:fullscreen #controls {
+-  display: none !important; 
+-}
+-</file>
+-
+-<file path=".gitignore">
+-# Logs
+-logs
+-*.log
+-npm-debug.log*
+-yarn-debug.log*
+-yarn-error.log*
+-pnpm-debug.log*
+-lerna-debug.log*
+-
+-node_modules
+-dist
+-dist-ssr
+-*.local
+-
+-# Editor directories and files
+-.vscode/*
+-!.vscode/extensions.json
+-.idea
+-.DS_Store
+-*.suo
+-*.ntvs*
+-*.njsproj
+-*.sln
+-*.sw?
+-</file>
+-
+-<file path="index.html">
+-<!doctype html>
+-<html lang="en">
+-  <head>
+-    <meta charset="UTF-8" />
+-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-    <title>presentweb</title>
+-  </head>
+-  <body>
+-    <div id="app"></div>
+-    <script type="module" src="/src/main.js"></script>
+-  </body>
+-</html>
+-</file>
+-
+-<file path="package.json">
+-{
+-  "name": "presentweb",
+-  "version": "0.0.0",
+-  "private": true,
+-  "type": "module",
+-  "scripts": {
+-    "dev": "vite",
+-    "build": "vite build",
+-    "preview": "vite preview"
+-  },
+-  "devDependencies": {
+-    "@vitejs/plugin-basic-ssl": "^2.3.0",
+-    "vite": "^8.3.0"
+-  },
+-  "dependencies": {
+-    "pdfjs-dist": "^6.3.289",
+-    "peerjs": "^1.5.5",
+-    "qrcode": "^1.5.4"
+-  }
+-}
+-</file>
+-
+-<file path="src/main.js">
+-import './style.css';
+-import * as pdfjsLib from 'pdfjs-dist';
+-import PdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
+-
+-pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorker;
+-
+-document.querySelector('#app').innerHTML = `
+-  <h1>presentExs</h1>
+-  <input type="file" id="pdfInput" accept=".pdf" />
+-  <div id="controls" style="display:none; margin-top: 16px; gap: 12px; justify-content: center; align-items: center;">
+-    <button id="btnPrev">← Prev</button>
+-    <span id="pageInfo">1 / 1</span>
+-    <button id="btnNext">Next →</button>
+-    <button id="btnFullscreen" title="Fullscreen (F)">⛶ Fullscreen</button>
+-  </div>
+-  <div id="viewer">
+-    <canvas id="pdfCanvas"></canvas>
+-  </div>
+-  <p id="status">Pilih file PDF untuk memulai.</p>
+-`;
+-
+-const input = document.getElementById('pdfInput');
+-const canvas = document.getElementById('pdfCanvas');
+-const viewer = document.getElementById('viewer');
+-const status = document.getElementById('status');
+-const controls = document.getElementById('controls');
+-const btnPrev = document.getElementById('btnPrev');
+-const btnNext = document.getElementById('btnNext');
+-const pageInfo = document.getElementById('pageInfo');
+-const btnFullscreen = document.getElementById('btnFullscreen');
+-
+-// State di module scope
+-let currentPdf = null;
+-let currentPageNum = 1;
+-
+-// ---- Render halaman ke canvas ----
+-async function renderPage(num) {
+-  if (!currentPdf) return;
+-  if (num < 1 || num > currentPdf.numPages) return;
+-
+-  currentPageNum = num;
+-  pageInfo.textContent = `${num} / ${currentPdf.numPages}`;
+-
+-  console.log(`[presentExs] Halaman ${num} / ${currentPdf.numPages}`);
+-
+-  
+-
+-  const page = await currentPdf.getPage(num);
+-  const naturalViewport = page.getViewport({ scale: 1.0 });
+-
+-  const containerWidth = viewer.clientWidth || window.innerWidth - 40;
+-  const isFullscreen = !!document.fullscreenElement;
+-  const containerHeight = isFullscreen 
+-    ? window.innerHeight - 20      // fullscreen: hampir seluruh layar
+-    : window.innerHeight - 260;    // normal: sisakan untuk header & tombol
+-  const fitScale = Math.min(
+-    containerWidth / naturalViewport.width,
+-    containerHeight / naturalViewport.height
+-  );
+-
+-  const dpr = window.devicePixelRatio || 1;
+-  const renderScale = fitScale * dpr;
+-  const viewport = page.getViewport({ scale: renderScale });
+-
+-  canvas.width = viewport.width;
+-  canvas.height = viewport.height;
+-  canvas.style.width = (viewport.width / dpr) + 'px';
+-  canvas.style.height = (viewport.height / dpr) + 'px';
+-
+-  const context = canvas.getContext('2d');
+-  await page.render({ canvasContext: context, viewport }).promise;
+-
+-  // Update tombol disabled state
+-  btnPrev.disabled = num <= 1;
+-  btnNext.disabled = num >= currentPdf.numPages;
+-}
+-
+-// ---- Load PDF baru ----
+-input.addEventListener('change', async (e) => {
+-  const file = e.target.files[0];
+-  if (!file) return;
+-
+-  status.textContent = `Memuat ${file.name}...`;
+-
+-  try {
+-    const arrayBuffer = await file.arrayBuffer();
+-    currentPdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+-    console.log('[presentExs] PDF loaded. Total halaman:', currentPdf.numPages);
+-
+-    controls.style.display = 'flex';
+-    status.textContent = `✓ ${file.name}`;
+-    await renderPage(1);
+-  } catch (err) {
+-    console.error('[presentExs] Error:', err);
+-    status.textContent = `❌ Error: ${err.message}`;
+-  }
+-});
+-
+-// ---- Tombol ----
+-btnPrev.addEventListener('click', () => renderPage(currentPageNum - 1));
+-btnNext.addEventListener('click', () => renderPage(currentPageNum + 1));
+-
+-// ---- Keyboard ----
+-document.addEventListener('keydown', (e) => {
+-  if (!currentPdf) return;
+-
+-  // Fullscreen toggle
+-  if (e.key === 'f' || e.key === 'F') {
+-    e.preventDefault();
+-    toggleFullscreen();
+-    return;
+-  }
+-
+-  // Navigasi
+-  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+-    e.preventDefault();
+-    renderPage(currentPageNum + 1);
+-  } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+-    e.preventDefault();
+-    renderPage(currentPageNum - 1);
+-  }
+-});
+-
+-// ---- Fullscreen ----
+-function updateFullscreenButton() {
+-  const isFs = !!document.fullscreenElement;
+-  btnFullscreen.textContent = isFs ? '⛶ Exit Fullscreen' : '⛶ Fullscreen';
+-}
+-
+-function toggleFullscreen() {
+-  if (!document.fullscreenElement) {
+-    // Ganti viewer menjadi document.documentElement agar dikenali oleh kebijakan registri
+-    document.documentElement.requestFullscreen().catch((err) => {
+-      console.warn('[presentExs] Fullscreen failed:', err);
+-    });
+-  } else {
+-    document.exitFullscreen();
+-  }
+-}
+-
+-
+-btnFullscreen.addEventListener('click', toggleFullscreen);
+-
+-// Sync tombol saat user keluar fullscreen pakai Escape
+-document.addEventListener('fullscreenchange', () => {
+-  updateFullscreenButton();
+-  if (currentPdf) renderPage(currentPageNum);
+-});
+-
+-// ---- Terima perintah dari receiver (via BroadcastChannel) ----
+-const cmdChannel = new BroadcastChannel('presentexs-cmd');
+-cmdChannel.onmessage = (e) => {
+-  const { action } = e.data || {};
+-  console.log('[Viewer] Command received:', action);
+-
+-  if (!currentPdf) {
+-    console.warn('[Viewer] No PDF loaded, ignoring command');
+-    return;
+-  }
+-
+-  switch (action) {
+-    case 'next':
+-      renderPage(currentPageNum + 1);
+-      break;
+-    case 'prev':
+-      renderPage(currentPageNum - 1);
+-      break;
+-    case 'present':
+-      if (!document.fullscreenElement) toggleFullscreen();
+-      break;
+-    case 'exit':
+-      if (document.fullscreenElement) document.exitFullscreen();
+-      break;
+-    default:
+-      console.warn('[Viewer] Unknown action:', action);
+-  }
+-};
+-</file>
+-
+-</files>
+diff --git a/src/main.js b/src/main.js
+index 1de4c2e..cfc52ce 100644
+--- a/src/main.js
++++ b/src/main.js
+@@ -4,6 +4,8 @@ import './styles/components.css';
+ import './styles/viewer.css';
+ import * as pdfjsLib from 'pdfjs-dist';
+ import PdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
++import { host } from './transport.js';
++import { makeMessage, CMD_CHANNEL, isAction } from './protocol.js';
+ 
+ pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorker;
+ 
+@@ -42,6 +44,7 @@ document.querySelector('#app').innerHTML = `
+ 
+     <div id="viewer">
+       <canvas id="pdfCanvas"></canvas>
++      <div class="blackout-overlay" id="blackoutOverlay" hidden></div>
+     </div>
+ 
+     <div class="status-bar ok" id="statusLoaded">
+@@ -213,6 +216,9 @@ async function renderPage(num) {
+ 
+   btnPrev.disabled = num <= 1;
+   btnNext.disabled = num >= currentPdf.numPages;
++
++  // Sinkronkan HP (dipanggil via hoisting dari blok remote di bawah)
++  if (typeof publishState === 'function') publishState();
+ }
+ 
+ // ============================================================
+@@ -409,29 +415,123 @@ document.addEventListener('fullscreenchange', () => {
+ });
+ 
+ // ============================================================
+-// BROADCAST CHANNEL — remote commands
++// REMOTE — viewer adalah HOST PeerJS langsung
++// ------------------------------------------------------------
++// Topologi baru: HP → connect LANGSUNG ke peer "presentexs-KODE"
++// yang diklaim oleh tab ini. Tidak ada lagi hop BroadcastChannel
++// yang rapuh. Receiver hanya menampilkan info room (via BC) dan
++// berfungsi sebagai relay cadangan bila viewer belum dibuka.
++//
++// State dua arah: setiap perubahan halaman/presentasi di PC
++// di-broadcast balik ke semua HP yang terhubung.
+ // ============================================================
+-const cmdChannel = new BroadcastChannel('presentexs-cmd');
+-cmdChannel.onmessage = (e) => {
+-  const { action } = e.data || {};
+-  console.log('[Viewer] Command received:', action);
+ 
+-  if (!currentPdf) return;
++let transport = null;
++let blackout = false;
++const bc = new BroadcastChannel(CMD_CHANNEL); // sinkron dgn tab receiver
++
++function remoteState() {
++  return {
++    page: currentPdf ? currentPageNum : 0,
++    total: currentPdf ? currentPdf.numPages : 0,
++    fullscreen: !!document.fullscreenElement,
++    blackout,
++  };
++}
++
++/** Panggil setiap kali state presenter berubah → kirim ke HP + tab lain. */
++function publishState() {
++  const st = remoteState();
++  if (transport) transport.send(() => makeMessage('state', 'viewer', st));
++  bc.postMessage({ v: 1, type: 'state', from: 'viewer', payload: st });
++}
++
++/** Eksekusi aksi remote (dipakai jalur PeerJS maupun relay receiver). */
++function applyRemoteAction(action, payload = {}) {
++  console.log('[Viewer] Remote action:', action, payload);
++
++  switch (action) {
++    case 'blackout':
++      blackout = !blackout;
++      document.getElementById('blackoutOverlay').hidden = !blackout;
++      setLoadedStatus(blackout ? '⬛ Layar hitam (blacked out)' : '✓ Layar normal');
++      break;
++  }
++
++  if (!currentPdf && action !== 'exit' && action !== 'blackout') {
++    setLoadedStatus('⚠ Belum ada PDF di PC', 'err');
++    publishState();
++    return;
++  }
+ 
+   switch (action) {
+     case 'next':    renderPage(currentPageNum + 1); break;
+     case 'prev':    renderPage(currentPageNum - 1); break;
++    case 'goto':    renderPage(Number(payload.page) || 1); break;
+     case 'present':
+       if (!document.fullscreenElement) {
+-        setLoadedStatus('⚠ Klik "▶ Mulai Presentasi" di PC', 'err');
++        setLoadedStatus('⚠ HP minta presentasi — klik "▶ Mulai" di PC (butuh gesture user)', 'err');
+       }
+       break;
+     case 'exit':
++      blackout = false;
+       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+       break;
+   }
++  publishState();
++}
++
++function startHost(code) {
++  if (transport) transport.destroy();
++  transport = host(code, {
++    onCodeChange: (c) => {
++      // kabari tab receiver supaya QR & kode selalu sinkron
++      bc.postMessage({ v: 1, type: 'code', from: 'viewer', payload: { code: c } });
++    },
++    onOpen: () => {
++      setLoadedStatus(`✓ Remote aktif — siap menerima HP`);
++      publishState();
++    },
++    onPeerJoin: (id) => {
++      console.log('[Viewer] HP connected:', id);
++      setLoadedStatus(`✓ HP terhubung (${id.slice(-4)})`);
++      publishState();
++    },
++    onPeerLeave: () => setLoadedStatus('⚠ HP terputus, menunggu sambungan ulang...'),
++    onMessage: (msg, reply) => {
++      if (msg.type === 'cmd' && isAction(msg.payload.action)) {
++        applyRemoteAction(msg.payload.action, msg.payload);
++      } else if (msg.type === 'hello') {
++        // HP memperkenalkan diri → balas dengan state terkini
++        reply(makeMessage('state', 'viewer', remoteState()));
++      }
++    },
++    onError: (err) => console.error('[Viewer] transport error:', err),
++    onStatus: (t) => console.log('[Viewer] transport:', t),
++  });
++}
++
++// Dukungan relay: pesan yang diteruskan tab receiver (kasus viewer
++// dibuka setelah HP connect ke receiver) tetap dieksekusi di sini.
++bc.onmessage = (e) => {
++  const msg = e.data;
++  if (!msg || msg.from === 'viewer') return;
++  if (msg.type === 'cmd' && isAction(msg.payload?.action)) {
++    applyRemoteAction(msg.payload.action, msg.payload);
++  } else if (msg.type === 'request-code') {
++    // receiver baru dibuka → kirimi kode aktif kita
++    bc.postMessage({ v: 1, type: 'code', from: 'viewer', payload: { code: transport ? transport.code : null } });
++  }
+ };
+ 
++// Kode awal dari ?room=XXXXXX (agar bisa "recovery": buka viewer.html?room=...
++// untuk menyambung kembali sesi yang kodenya diketahui HP), selain itu acak.
++const initialCode = new URLSearchParams(location.search).get('room');
++startHost(/^\d{6}$/.test(initialCode || '') ? initialCode : undefined);
++
++// Publish state saat navigasi lokal (keyboard/tombol) terjadi juga.
++document.addEventListener('fullscreenchange', publishState);
++
+ // ============================================================
+ // INIT
+ // ============================================================
+diff --git a/src/mobile.js b/src/mobile.js
+index 28cccc9..72bc0e7 100644
+--- a/src/mobile.js
++++ b/src/mobile.js
+@@ -1,19 +1,30 @@
++// ============================================================
++// presentExs — Remote HP (client PeerJS)
++// ------------------------------------------------------------
++// v2: connect LANGSUNG ke viewer (host "presentexs-KODE"),
++// pakai transport.join() dengan auto-reconnect backoff,
++// protocol envelope v1, dan menampilkan STATE dua arah
++// (halaman aktif / total / status fullscreen) dari PC.
++// ============================================================
++
+ import './styles/tokens.css';
+ import './styles/base.css';
+ import './styles/components.css';
+ import './styles/mobile.css';
+-import Peer from 'peerjs';
+-
+-const ROOM_PREFIX = 'presentexs-';
+-
+-const roomLabel = document.getElementById('roomLabel');
+-const statusEl = document.getElementById('status');
+-const controls = document.getElementById('controls');
+-const btnPrev = document.getElementById('btnPrev');
+-const btnNext = document.getElementById('btnNext');
++import { join } from './transport.js';
++import { makeMessage } from './protocol.js';
++
++const roomLabel  = document.getElementById('roomLabel');
++const statusEl   = document.getElementById('status');
++const controls   = document.getElementById('controls');
++const btnPrev    = document.getElementById('btnPrev');
++const btnNext    = document.getElementById('btnNext');
+ const btnPresent = document.getElementById('btnPresent');
+-const btnExit = document.getElementById('btnExit');
+-const logEl = document.getElementById('log');
++const btnExit    = document.getElementById('btnExit');
++const logEl      = document.getElementById('log');
++const progressEl = document.getElementById('progress');
++const slideInfoEl = document.getElementById('slideInfo');
++const swipeHintEl  = document.getElementById('swipeHint');
+ 
+ // ---- Baca room code dari URL ----
+ const params = new URLSearchParams(location.search);
+@@ -28,84 +39,86 @@ if (!room || !/^\d{6}$/.test(room)) {
+ roomLabel.textContent = room;
+ console.log('[Mobile] Room:', room);
+ 
+-// ---- Init PeerJS ----
+-const peer = new Peer({
+-  debug: 2,
+-  config: {
+-    iceServers: [
+-      { urls: 'stun:stun.l.google.com:19302' },
+-      { urls: 'stun:stun1.l.google.com:19302' },
+-    ],
+-  },
+-});
+-
+-let conn = null;
++let lastTapped = 0; // anti double-tap < 300ms
+ 
+-peer.on('open', (id) => {
+-  console.log('[Mobile] ✓ PeerJS online. My ID:', id);
+-  statusEl.textContent = 'Menghubungkan ke PC...';
+-
+-  conn = peer.connect(ROOM_PREFIX + room, { reliable: true });
+-
+-  conn.on('open', () => {
+-    console.log('[Mobile] ✓ Connected to PC');
+-    statusEl.textContent = '✓ Terhubung';
+-    statusEl.classList.add('ok');
++// ---- Koneksi (auto-reconnect ditangani transport.join) ----
++const client = join(room, {
++  onOpen: () => {
++    statusEl.textContent = '✓ Terhubung ke PC';
++    statusEl.className = 'status ok';
+     controls.style.display = 'flex';
+-    log('Terhubung ke PC');
+-  });
+-
+-  conn.on('data', (data) => {
+-    console.log('[Mobile] Received:', data);
+-    if (data.type === 'hello') {
+-      log('PC siap menerima perintah');
+-    }
+-  });
+-
+-  conn.on('close', () => {
+-    console.log('[Mobile] Connection closed');
+-    statusEl.textContent = '⚠ Koneksi terputus';
+-    statusEl.classList.remove('ok');
+-    statusEl.classList.add('err');
+-    controls.style.display = 'none';
+-  });
+-
+-  conn.on('error', (err) => {
+-    console.error('[Mobile] Connection error:', err);
+-    log('Error: ' + err.message);
+-  });
++    if (progressEl) progressEl.hidden = false;
++    log('Terhubung — mengirim hello');
++    client.send(makeMessage('hello', 'phone', { ua: navigator.userAgent.slice(0, 60) }));
++  },
++  onMessage: (msg) => {
++    if (msg.type === 'state') renderState(msg.payload);
++    else if (msg.type === 'sys' && msg.payload?.event === 'connected') log('PC menyambut 👋');
++  },
++  onPeerLeave: () => {
++    statusEl.textContent = '⚠ Terputus dari PC';
++    statusEl.className = 'status err';
++  },
++  onStatus: (t) => { statusEl.textContent = t; statusEl.className = 'status'; },
++  onError: (err) => {
++    console.error('[Mobile] error:', err);
++    log('Error: ' + (err.message || err.type));
++  },
+ });
+ 
+-peer.on('error', (err) => {
+-  console.error('[Mobile] PeerJS error:', err);
+-  if (err.type === 'peer-unavailable') {
+-    statusEl.textContent = '❌ PC tidak ditemukan. Cek kode room.';
+-  } else {
+-    statusEl.textContent = `❌ ${err.type}: ${err.message}`;
++// ---- Render state dari PC ----
++function renderState(st) {
++  if (!st) return;
++  if (st.total > 0) {
++    if (slideInfoEl) slideInfoEl.textContent = `${st.page} / ${st.total}`;
++    if (progressEl) {
++      progressEl.hidden = false;
++      progressEl.querySelector('.bar').style.width = ((st.page / st.total) * 100) + '%';
++    }
++  } else if (slideInfoEl) {
++    slideInfoEl.textContent = 'PDF belum dimuat di PC';
+   }
+-  statusEl.classList.add('err');
+-});
++  btnPresent.disabled = !!st.fullscreen;
++  btnExit.disabled = !st.fullscreen && !st.blackout;
++  if (st.blackout) log('Layar PC di-blackout');
++}
+ 
+ // ---- Kirim perintah ----
+-function send(action) {
+-  if (!conn || !conn.open) {
+-    log('⚠ Belum terhubung');
++function send(action, extra = {}) {
++  const now = Date.now();
++  if (now - lastTapped < 250) return; // debounce tap ganda
++  lastTapped = now;
++
++  if (!client.isOpen()) {
++    log('⚠ Belum terhubung — perintah dilewatkan');
++    if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+     return;
+   }
+-  conn.send({ action });
+-  console.log('[Mobile] Sent:', action);
++  client.send(makeMessage('cmd', 'phone', { action, ...extra }));
+   log('→ ' + action);
+-  if (navigator.vibrate) navigator.vibrate(20);
++  if (navigator.vibrate) navigator.vibrate(15);
+ }
+ 
+-// ---- Event handlers ----
+ btnPrev.addEventListener('click', () => send('prev'));
+ btnNext.addEventListener('click', () => send('next'));
+ btnPresent.addEventListener('click', () => send('present'));
+ btnExit.addEventListener('click', () => send('exit'));
+ 
++// ---- Swipe kiri/kanan untuk ganti slide ----
++let touchX = null;
++document.addEventListener('touchstart', (e) => { touchX = e.touches[0].clientX; }, { passive: true });
++document.addEventListener('touchend', (e) => {
++  if (touchX === null) return;
++  const dx = e.changedTouches[0].clientX - touchX;
++  touchX = null;
++  if (Math.abs(dx) > 60) {
++    send(dx < 0 ? 'next' : 'prev');
++    if (swipeHintEl) swipeHintEl.hidden = true;
++  }
++}, { passive: true });
++
+ // ---- Log helper ----
+ function log(msg) {
+   const t = new Date().toLocaleTimeString();
+   logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent;
+-}
+\ No newline at end of file
++}
+diff --git a/src/protocol.js b/src/protocol.js
+new file mode 100644
+index 0000000..a9a2f3d
+--- /dev/null
++++ b/src/protocol.js
+@@ -0,0 +1,34 @@
++// ============================================================
++// presentExs — Message Protocol v1
++// ------------------------------------------------------------
++// Semua pesan antar-device memakai envelope seragam:
++//   { v: 1, type: 'hello'|'cmd'|'state', from, payload }
++//
++// Arah lalu lintas (topologi baru):
++//   HP  --cmd-->   Viewer (peer langsung "presentexs-XXXXXX")
++//   HP  --hello->  Viewer (perkenalan diri saat koneksi terbuka)
++//   Viewer --state-> HP (sinkronisasi dua arah: halaman, total, dsb)
++//   Receiver hanya sebagai relay cadangan bila viewer offline.
++// ============================================================
++
++export const PROTOCOL_VERSION = 1;
++export const ROOM_PREFIX = 'presentexs-';
++export const CMD_CHANNEL = 'presentexs-cmd'; // BroadcastChannel sesama tab
++
++/** Buat envelope pesan. */
++export function makeMessage(type, from, payload = {}) {
++  return { v: PROTOCOL_VERSION, type, from, payload };
++}
++
++/** Validasi bentuk envelope. Pesan tak dikenal dibuang, bukan crash. */
++export function isMessage(msg) {
++  return !!msg && typeof msg === 'object' && msg.v === PROTOCOL_VERSION && typeof msg.type === 'string';
++}
++
++/** Daftar aksi remote yang dikenal viewer. */
++export const ACTIONS = new Set(['next', 'prev', 'goto', 'blackout', 'present', 'exit']);
++
++/** Payload minimal per aksi (validasi ringan di sisi penerima). */
++export function isAction(a) {
++  return typeof a === 'string' && ACTIONS.has(a);
++}
+diff --git a/src/receiver.js b/src/receiver.js
+index 9220145..5d7747f 100644
+--- a/src/receiver.js
++++ b/src/receiver.js
+@@ -1,92 +1,104 @@
++// ============================================================
++// presentExs — Receiver (halaman info & relay cadangan)
++// ------------------------------------------------------------
++// Perubahan arsitektur v2:
++//   * Viewer (index.html) adalah HOST PeerJS "presentexs-KODE".
++//   * Receiver TIDAK lagi mengklaim peer ID. Perannya:
++//       1. Menampilkan kode room + QR sinkron dengan viewer
++//          (via BroadcastChannel, dua arah).
++//       2. Relay cadangan: bila HP terlanjur connect ke sini
++//          saat viewer belum dibuka, pesan diteruskan via BC
++//          dan/atau di-buffer lalu dikirim saat viewer siap.
++// ============================================================
++
+ import './styles/tokens.css';
+ import './styles/base.css';
+ import './styles/components.css';
+ import './styles/receiver.css';
+ import QRCode from 'qrcode';
+ import Peer from 'peerjs';
++import { makeMessage, CMD_CHANNEL } from './protocol.js';
+ 
+-const ROOM_PREFIX = 'presentexs-';
++const bc = new BroadcastChannel(CMD_CHANNEL);
+ 
+ const roomCodeEl = document.getElementById('roomCode');
+-const qrCanvas = document.getElementById('qrCanvas');
+-const statusEl = document.getElementById('status');
+-const logEl = document.getElementById('log');
++const qrCanvas   = document.getElementById('qrCanvas');
++const statusEl   = document.getElementById('status');
++const logEl      = document.getElementById('log');
+ 
+-// ---- Generate room code 6 digit ----
+-const code = String(Math.floor(100000 + Math.random() * 900000));
+-roomCodeEl.textContent = code;
+-console.log('[Receiver] Room code:', code);
++let code = null;
++let viewerOnline = false;
++const pendingCmds = []; // buffer perintah HP saat viewer belum buka tab
+ 
+-// ---- Generate QR ----
+-// URL yang akan dibuka HP
+-const mobileUrl = `${location.origin}/mobile.html?room=${code}`;
+-console.log('[Receiver] Mobile URL:', mobileUrl);
++// ---- Kode awal: dari ?room= atau acak (sebagai placeholder) ----
++const urlRoom = new URLSearchParams(location.search).get('room');
++setCode(/^\d{6}$/.test(urlRoom || '') ? urlRoom : String(Math.floor(100000 + Math.random() * 900000)));
+ 
+-QRCode.toCanvas(qrCanvas, mobileUrl, { width: 240 }, (err) => {
+-  if (err) {
+-    console.error('[Receiver] QR error:', err);
+-    statusEl.textContent = '❌ Gagal generate QR';
+-    return;
+-  }
+-  statusEl.textContent = 'Menunggu HP scan QR...';
+-});
++function setCode(c) {
++  code = c;
++  roomCodeEl.textContent = c;
++  const mobileUrl = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}mobile.html?room=${c}`;
++  QRCode.toCanvas(qrCanvas, mobileUrl, { width: 240 }, (err) => {
++    if (err) { statusEl.textContent = '❌ Gagal generate QR'; return; }
++    refreshStatus();
++  });
++}
+ 
+-// ---- Init PeerJS ----
+-const peerId = ROOM_PREFIX + code;
+-console.log('[Receiver] Peer ID:', peerId);
++function refreshStatus() {
++  statusEl.textContent = viewerOnline
++    ? `✓ Viewer aktif — Room ${code}. Scan QR dengan HP.`
++    : `Room ${code} — buka tab Viewer (index.html) agar perintah dieksekusi.`;
++}
+ 
+-const peer = new Peer(peerId, {
+-  debug: 2,
+-  config: {
+-    iceServers: [
+-      { urls: 'stun:stun.l.google.com:19302' },
+-      { urls: 'stun:stun1.l.google.com:19302' },
+-    ],
+-  },
+-});
++// ---- Sinkronisasi kode dengan tab viewer ----
++bc.onmessage = (e) => {
++  const msg = e.data;
++  if (!msg || msg.from === 'receiver') return;
+ 
+-peer.on('open', (id) => {
+-  console.log('[Receiver] ✓ PeerJS online:', id);
+-  statusEl.textContent = `✓ Siap. Menunggu HP scan...`;
+-});
++  if (msg.type === 'code' && msg.payload?.code) {
++    viewerOnline = true;
++    if (msg.payload.code !== code) setCode(msg.payload.code);
++    flushPending();
++    refreshStatus();
++    log('Viewer online, kode disinkronkan');
++  } else if (msg.type === 'state') {
++    log('State viewer: halaman ' + (msg.payload.page || '-') + '/' + (msg.payload.total || '-'));
++  }
++};
+ 
+-peer.on('error', (err) => {
+-  console.error('[Receiver] PeerJS error:', err);
+-  statusEl.textContent = `❌ ${err.type}: ${err.message}`;
++// tanyakan kode ke viewer bila ada yang sudah terbuka
++bc.postMessage(makeMessage('request-code', 'receiver'));
++setTimeout(() => { if (!viewerOnline) refreshStatus(); }, 800);
++
++// ---- Relay cadangan: terima koneksi HP bila viewer belum host ----
++// (Hanya aktif bila tidak ada viewer di browser ini; begitu viewer
++//  online, HP sebaiknya scan ulang QR untuk connect langsung.)
++const peer = new Peer('presentexs-relay-' + Math.floor(Math.random() * 1e6), {
++  config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] },
++  debug: 1,
+ });
+ 
+ peer.on('connection', (conn) => {
+-  console.log('[Receiver] HP connected:', conn.peer);
+-  statusEl.textContent = `✓ HP terhubung: ${conn.peer}`;
+-
+-  conn.on('open', () => {
+-    console.log('[Receiver] Connection open');
+-    log('HP siap kirim perintah');
++  conn.on('data', (raw) => {
++    if (!raw || raw.v !== 1) return;
++    log('Diterima dari HP: ' + JSON.stringify(raw.payload));
++    if (raw.type === 'cmd') {
++      bc.postMessage(makeMessage('cmd', 'receiver', raw.payload));
++      if (!viewerOnline) pendingCmds.push(raw.payload);
++    }
+   });
++  conn.on('close', () => log('HP terputus (mode relay)'));
++});
+ 
+-  conn.on('data', (data) => {
+-  console.log('[Receiver] Received:', data);
+-  log('Diterima: ' + JSON.stringify(data));
++peer.on('error', (err) => console.warn('[Receiver] relay peer error:', err.type));
+ 
+-  // Teruskan ke tab viewer via BroadcastChannel
+-  if (data.action) {
+-    const bc = new BroadcastChannel('presentexs-cmd');
+-    bc.postMessage({ action: data.action });
+-    bc.close();
+-    console.log('[Receiver] → forwarded to viewer:', data.action);
++function flushPending() {
++  while (pendingCmds.length) {
++    bc.postMessage(makeMessage('cmd', 'receiver', pendingCmds.shift()));
+   }
+-});
+-
+-  conn.on('close', () => {
+-    console.log('[Receiver] HP disconnected');
+-    statusEl.textContent = 'Menunggu HP scan...';
+-    log('HP terputus');
+-  });
+-});
++}
+ 
+-// ---- Simple log helper ----
+ function log(msg) {
+   const t = new Date().toLocaleTimeString();
+-  const line = `[${t}] ${msg}`;
+-  logEl.textContent = line + '\n' + logEl.textContent;
+-}
+\ No newline at end of file
++  logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent;
++}
+diff --git a/src/styles/mobile.css b/src/styles/mobile.css
+index e69de29..7fa3766 100644
+--- a/src/styles/mobile.css
++++ b/src/styles/mobile.css
+@@ -0,0 +1,187 @@
++/* ============================================================
++   Halaman mobile.html — Remote presenter (UX prioritas utama)
++   Prinsip: target sentuh ≥ 64px, satu tangan, aman saat layar
++   terkunci/berpindah sinyal. Mengikuti design tokens neumorphic.
++   ============================================================ */
++
++.page-mobile {
++  overscroll-behavior: none; /* cegah pull-to-refresh saat swipe slide */
++}
++
++.page-mobile #app {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  gap: var(--space-5);
++  padding: calc(var(--space-5) + env(safe-area-inset-top)) var(--space-5)
++           calc(var(--space-5) + env(safe-area-inset-bottom));
++  max-width: 480px;
++  margin: 0 auto;
++  min-height: 100dvh;
++  box-sizing: border-box;
++}
++
++.page-mobile h1 {
++  font-size: var(--fs-xl);
++  font-weight: var(--fw-bold);
++  letter-spacing: 0.5px;
++  margin: 0;
++}
++
++/* ---------- Info room ---------- */
++.page-mobile .room-info {
++  display: flex;
++  align-items: center;
++  gap: var(--space-3);
++  background: var(--bg-sunken);
++  box-shadow: var(--shadow-in);
++  border-radius: var(--radius-pill);
++  padding: var(--space-2) var(--space-5);
++}
++
++.page-mobile .room-info .label {
++  font-size: var(--fs-xs);
++  text-transform: uppercase;
++  letter-spacing: 1.5px;
++  color: var(--text-muted);
++}
++
++.page-mobile .room-info .value {
++  font-family: var(--font-mono);
++  font-size: var(--fs-lg);
++  font-weight: var(--fw-bold);
++  letter-spacing: 4px;
++  color: var(--text);
++}
++
++/* ---------- Status koneksi ---------- */
++.page-mobile .status {
++  width: 100%;
++  text-align: center;
++  font-size: var(--fs-md);
++  font-weight: var(--fw-medium);
++  color: var(--text-secondary);
++  background: var(--bg-elevated);
++  border-radius: var(--radius-md);
++  box-shadow: var(--shadow-out-sm);
++  padding: var(--space-3) var(--space-4);
++  transition: color var(--duration-base) var(--ease-out),
++              box-shadow var(--duration-base) var(--ease-out);
++}
++
++.page-mobile .status.ok  { color: #0E9F6E; box-shadow: var(--shadow-out-sm), inset 0 0 0 1px rgba(52,211,153,.35); }
++.page-mobile .status.err { color: var(--danger); box-shadow: var(--shadow-out-sm), inset 0 0 0 1px rgba(255,92,92,.35); }
++
++/* ---------- Progress slide dari PC ---------- */
++.page-mobile .progress-wrap {
++  width: 100%;
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-2);
++}
++
++.page-mobile .slide-info {
++  text-align: center;
++  font-family: var(--font-mono);
++  font-size: var(--fs-lg);
++  font-weight: var(--fw-semibold);
++  color: var(--text);
++}
++
++.page-mobile .progress {
++  height: 10px;
++  border-radius: var(--radius-pill);
++  background: var(--bg-sunken);
++  box-shadow: var(--shadow-in);
++  overflow: hidden;
++}
++
++.page-mobile .progress .bar {
++  height: 100%;
++  width: 0%;
++  border-radius: inherit;
++  background: var(--accent);
++  box-shadow: 0 0 8px var(--accent-shadow);
++  transition: width var(--duration-slow) var(--ease-out);
++}
++
++/* ---------- Kontrol navigasi ---------- */
++.page-mobile .controls {
++  width: 100%;
++  display: flex;
++  gap: var(--space-4);
++  justify-content: center;
++}
++
++.page-mobile .btn-nav {
++  flex: 1;
++  max-width: 180px;
++  min-height: 96px;
++  border: none;
++  border-radius: var(--radius-lg);
++  background: var(--bg-elevated);
++  box-shadow: var(--shadow-out);
++  color: var(--text);
++  font-size: 40px;
++  cursor: pointer;
++  -webkit-tap-highlight-color: transparent;
++  touch-action: manipulation;
++  user-select: none;
++  transition: transform var(--duration-fast) var(--ease-out),
++              box-shadow var(--duration-fast) var(--ease-out);
++}
++
++.page-mobile .btn-nav:active {
++  transform: scale(0.96);
++  box-shadow: var(--shadow-in);
++}
++
++/* ---------- Tombol aksi ---------- */
++.page-mobile .btn-action {
++  flex: 1;
++  min-height: 64px;
++  border: none;
++  border-radius: var(--radius-md);
++  background: var(--bg-elevated);
++  box-shadow: var(--shadow-out-sm);
++  color: var(--text);
++  font-size: var(--fs-lg);
++  font-weight: var(--fw-semibold);
++  cursor: pointer;
++  -webkit-tap-highlight-color: transparent;
++  touch-action: manipulation;
++  transition: transform var(--duration-fast) var(--ease-out),
++              box-shadow var(--duration-fast) var(--ease-out),
++              opacity var(--duration-base);
++}
++
++.page-mobile .btn-action:active { transform: scale(0.97); box-shadow: var(--shadow-in); }
++.page-mobile .btn-action.primary { background: var(--accent); color: var(--accent-text); box-shadow: var(--shadow-out-sm), 0 6px 16px var(--accent-shadow); }
++.page-mobile .btn-action.danger  { color: var(--danger); }
++.page-mobile .btn-action:disabled { opacity: 0.4; box-shadow: var(--shadow-out-xs); cursor: default; }
++
++/* ---------- Hint swipe ---------- */
++.page-mobile .swipe-hint {
++  font-size: var(--fs-sm);
++  color: var(--text-muted);
++  animation: pe-fade 2.4s var(--ease-out) infinite alternate;
++}
++
++@keyframes pe-fade { from { opacity: .45; } to { opacity: 1; } }
++
++/* ---------- Log ---------- */
++.page-mobile .log {
++  width: 100%;
++  max-height: 120px;
++  overflow-y: auto;
++  font-family: var(--font-mono);
++  font-size: var(--fs-xs);
++  line-height: 1.6;
++  white-space: pre-wrap;
++  word-break: break-all;
++  color: var(--text-muted);
++  background: var(--bg-sunken);
++  border-radius: var(--radius-sm);
++  box-shadow: var(--shadow-in);
++  padding: var(--space-3);
++}
+diff --git a/src/styles/viewer.css b/src/styles/viewer.css
+index 71abcf5..f225f45 100644
+--- a/src/styles/viewer.css
++++ b/src/styles/viewer.css
+@@ -225,4 +225,13 @@
+ .page-viewer .btn-change-pdf:active {
+   box-shadow: var(--shadow-in);
+   transform: scale(0.98);
+-}
+\ No newline at end of file
++}
++/* ---------- Blackout overlay (remote: "layar hitam") ---------- */
++#viewer { position: relative; }
++.blackout-overlay {
++  position: absolute;
++  inset: 0;
++  background: #000;
++  z-index: 50;
++  cursor: pointer;
++}
+diff --git a/src/transport.js b/src/transport.js
+new file mode 100644
+index 0000000..dfe70d0
+--- /dev/null
++++ b/src/transport.js
+@@ -0,0 +1,185 @@
++// ============================================================
++// presentExs — Transport abstraction
++// ------------------------------------------------------------
++// Membungkus PeerJS di belakang interface sederhana sehingga
++// fitur (voice, subtitle, remote) tidak perlu tahu soal WebRTC.
++//
++// Peran:
++//   host(code, handlers)  → viewer/PC: claim peer "presentexs-CODE"
++//                           + retry otomatis bila ID diambil orang
++//   join(code, handlers)  → HP: connect ke host, auto-reconnect
++//                           dengan exponential backoff
++//
++// Handlers yang dikenali:
++//   onOpen(id), onError(err), onMessage(msg, reply),
++//   onPeerJoin(id), onPeerLeave(id), onStatus(text)
++// ============================================================
++
++import Peer from 'peerjs';
++import { ROOM_PREFIX, isMessage } from './protocol.js';
++
++const ICE = {
++  config: {
++    iceServers: [
++      { urls: 'stun:stun.l.google.com:19302' },
++      { urls: 'stun:stun1.l.google.com:19302' },
++    ],
++  },
++  debug: 1,
++};
++
++function randomCode() {
++  return String(Math.floor(100000 + Math.random() * 900000));
++}
++
++/**
++ * Jadi HOST (sisi PC/viewer).
++ * Menangani `ID-taken` dengan kode baru (maks 4 percobaan)
++ * dan melaporkan kode final via onStatus/onCodeChange.
++ */
++export function host(initialCode, handlers = {}) {
++  const h = handlers;
++  let code = initialCode || randomCode();
++  let peer = null;
++  let attempts = 0;
++  const conns = new Map(); // peerId -> DataConnection
++
++  function broadcast(msgFactory) {
++    for (const c of conns.values()) {
++      if (c.open) { try { c.send(msgFactory()); } catch {} }
++    }
++  }
++
++  function start() {
++    peer = new Peer(ROOM_PREFIX + code, ICE);
++
++    peer.on('open', (id) => {
++      attempts = 0;
++      console.log('[transport:host] online as', id);
++      h.onCodeChange && h.onCodeChange(code);
++      h.onOpen && h.onOpen(id);
++    });
++
++    peer.on('connection', (conn) => {
++      conns.set(conn.peer, conn);
++      h.onPeerJoin && h.onPeerJoin(conn.peer);
++
++      conn.on('open', () => {
++        h.onMessage && h.onMessage(
++          { v: 1, type: 'sys', from: conn.peer, payload: { event: 'connected' } },
++          (msg) => conn.send(msg)
++        );
++      });
++
++      conn.on('data', (raw) => {
++        if (!isMessage(raw)) {
++          console.warn('[transport:host] dropped malformed message', raw);
++          return;
++        }
++        h.onMessage && h.onMessage(raw, (msg) => { if (conn.open) conn.send(msg); });
++      });
++
++      conn.on('close', () => {
++        conns.delete(conn.peer);
++        h.onPeerLeave && h.onPeerLeave(conn.peer);
++      });
++    });
++
++    peer.on('error', (err) => {
++      if (err.type === 'unavailable-id' && attempts < 4) {
++        attempts++;
++        code = randomCode();
++        console.warn(`[transport:host] ID taken, retry #${attempts} with ${code}`);
++        h.onStatus && h.onStatus(`⚠ Kode dipakai, ganti ke ${code}...`);
++        try { peer.destroy(); } catch {}
++        setTimeout(start, 300);
++        return;
++      }
++      h.onError && h.onError(err);
++    });
++
++    peer.on('disconnected', () => {
++      h.onStatus && h.onStatus('⚠ Sinyal terputus, reconnecting...');
++      try { peer.reconnect(); } catch {}
++    });
++  }
++
++  start();
++
++  return {
++    get code() { return code; },
++    send: broadcast,
++    destroy() { try { peer && peer.destroy(); } catch {} },
++  };
++}
++
++/**
++ * Jadi CLIENT (sisi HP remote).
++ * Auto-reconnect dengan backoff 1s→2s→4s→...→maks 10s selama
++ * halaman terbuka, karena koneksi WebRTC bisa putus saat layar
++ * HP tidur atau sinyal berpindah.
++ */
++export function join(code, handlers = {}) {
++  const h = handlers;
++  let peer = null;
++  let conn = null;
++  let retries = 0;
++  let closed = false;
++
++  function connect() {
++    if (closed) return;
++    peer = new Peer(ICE);
++
++    peer.on('open', () => {
++      conn = peer.connect(ROOM_PREFIX + code, { reliable: true });
++
++      conn.on('open', () => {
++        retries = 0;
++        h.onOpen && h.onOpen(peer.id);
++      });
++
++      conn.on('data', (raw) => {
++        if (!isMessage(raw)) return;
++        h.onMessage && h.onMessage(raw, (msg) => { if (conn.open) conn.send(msg); });
++      });
++
++      conn.on('close', () => {
++        h.onPeerLeave && h.onPeerLeave(ROOM_PREFIX + code);
++        scheduleReconnect();
++      });
++
++      conn.on('error', (e) => h.onError && h.onError(e));
++    });
++
++    peer.on('error', (err) => {
++      if (err.type === 'peer-unavailable') {
++        h.onStatus && h.onStatus('⚠ PC belum siap, mencoba lagi...');
++        scheduleReconnect();
++        return;
++      }
++      h.onError && h.onError(err);
++    });
++  }
++
++  function scheduleReconnect() {
++    if (closed) return;
++    retries++;
++    const delay = Math.min(1000 * 2 ** (retries - 1), 10000);
++    h.onStatus && h.onStatus(`↻ Menyambung ulang dalam ${Math.round(delay / 1000)}s...`);
++    setTimeout(() => {
++      try { peer && peer.destroy(); } catch {}
++      connect();
++    }, delay);
++  }
++
++  connect();
++
++  return {
++    send(msg) {
++      if (conn && conn.open) { try { conn.send(msg); return true; } catch {} }
++      return false;
++    },
++    isOpen: () => !!(conn && conn.open),
++    destroy() { closed = true; try { peer && peer.destroy(); } catch {} },
++  };
++}
+-- 
+2.39.5
+
