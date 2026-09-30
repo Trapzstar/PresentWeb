@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#ECF0F3">
+  <title>Remote Presenter — presentExs</title>
+  <script type="module" crossorigin src="/assets/mobile-CIoKdpco.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/protocol-CL7sqx7B.js">
+  <link rel="modulepreload" crossorigin href="/assets/transport-DrDKLWTK.js">
+  <link rel="stylesheet" crossorigin href="/assets/protocol-DxQbpWFS.css">
+  <link rel="stylesheet" crossorigin href="/assets/mobile-BOoftrkW.css">
+</head>
+<body class="page-mobile">
+  <div id="app">
+    <h1>🎤 Remote Presenter</h1>
+
+    <div class="room-info">
+      <span class="label">Room</span>
+      <span class="value" id="roomLabel">------</span>
+    </div>
+
+    <div class="status" id="status" role="status" aria-live="polite">Menghubungkan...</div>
+
+    <div class="progress-wrap" id="progress" hidden>
+      <div class="slide-info" id="slideInfo">– / –</div>
+      <div class="progress" aria-hidden="true"><div class="bar"></div></div>
+    </div>
+
+    <div class="controls" id="controls" style="display:none;">
+      <button class="btn-nav" id="btnPrev" aria-label="Slide sebelumnya">←</button>
+      <button class="btn-nav" id="btnNext" aria-label="Slide berikutnya">→</button>
+    </div>
+
+    <p class="swipe-hint" id="swipeHint">💡 Geser layar ke kiri/kanan untuk ganti slide</p>
+
+    <div class="controls">
+      <button class="btn-action primary" id="btnPresent">▶ Mulai</button>
+      <button class="btn-action danger" id="btnExit" disabled>⏹ Keluar</button>
+    </div>
+
+    <div class="log" id="log" aria-hidden="true"></div>
+  </div>
+
+</body>
+</html>

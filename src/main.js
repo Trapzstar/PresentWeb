@@ -4,6 +4,8 @@ import './styles/components.css';
 import './styles/viewer.css';
 import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
+import { host } from './transport.js';
+import { makeMessage, CMD_CHANNEL, isAction } from './protocol.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorker;
 
@@ -42,6 +44,7 @@ document.querySelector('#app').innerHTML = `
 
     <div id="viewer">
       <canvas id="pdfCanvas"></canvas>
+      <div class="blackout-overlay" id="blackoutOverlay" hidden></div>
     </div>
 
     <div class="status-bar ok" id="statusLoaded">
@@ -213,6 +216,9 @@ async function renderPage(num) {
 
   btnPrev.disabled = num <= 1;
   btnNext.disabled = num >= currentPdf.numPages;
+
+  // Sinkronkan HP (dipanggil via hoisting dari blok remote di bawah)
+  if (typeof publishState === 'function') publishState();
 }
 
 // ============================================================
@@ -409,28 +415,122 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 // ============================================================
-// BROADCAST CHANNEL — remote commands
+// REMOTE — viewer adalah HOST PeerJS langsung
+// ------------------------------------------------------------
+// Topologi baru: HP → connect LANGSUNG ke peer "presentexs-KODE"
+// yang diklaim oleh tab ini. Tidak ada lagi hop BroadcastChannel
+// yang rapuh. Receiver hanya menampilkan info room (via BC) dan
+// berfungsi sebagai relay cadangan bila viewer belum dibuka.
+//
+// State dua arah: setiap perubahan halaman/presentasi di PC
+// di-broadcast balik ke semua HP yang terhubung.
 // ============================================================
-const cmdChannel = new BroadcastChannel('presentexs-cmd');
-cmdChannel.onmessage = (e) => {
-  const { action } = e.data || {};
-  console.log('[Viewer] Command received:', action);
 
-  if (!currentPdf) return;
+let transport = null;
+let blackout = false;
+const bc = new BroadcastChannel(CMD_CHANNEL); // sinkron dgn tab receiver
+
+function remoteState() {
+  return {
+    page: currentPdf ? currentPageNum : 0,
+    total: currentPdf ? currentPdf.numPages : 0,
+    fullscreen: !!document.fullscreenElement,
+    blackout,
+  };
+}
+
+/** Panggil setiap kali state presenter berubah → kirim ke HP + tab lain. */
+function publishState() {
+  const st = remoteState();
+  if (transport) transport.send(() => makeMessage('state', 'viewer', st));
+  bc.postMessage({ v: 1, type: 'state', from: 'viewer', payload: st });
+}
+
+/** Eksekusi aksi remote (dipakai jalur PeerJS maupun relay receiver). */
+function applyRemoteAction(action, payload = {}) {
+  console.log('[Viewer] Remote action:', action, payload);
+
+  switch (action) {
+    case 'blackout':
+      blackout = !blackout;
+      document.getElementById('blackoutOverlay').hidden = !blackout;
+      setLoadedStatus(blackout ? '⬛ Layar hitam (blacked out)' : '✓ Layar normal');
+      break;
+  }
+
+  if (!currentPdf && action !== 'exit' && action !== 'blackout') {
+    setLoadedStatus('⚠ Belum ada PDF di PC', 'err');
+    publishState();
+    return;
+  }
 
   switch (action) {
     case 'next':    renderPage(currentPageNum + 1); break;
     case 'prev':    renderPage(currentPageNum - 1); break;
+    case 'goto':    renderPage(Number(payload.page) || 1); break;
     case 'present':
       if (!document.fullscreenElement) {
-        setLoadedStatus('⚠ Klik "▶ Mulai Presentasi" di PC', 'err');
+        setLoadedStatus('⚠ HP minta presentasi — klik "▶ Mulai" di PC (butuh gesture user)', 'err');
       }
       break;
     case 'exit':
+      blackout = false;
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       break;
   }
+  publishState();
+}
+
+function startHost(code) {
+  if (transport) transport.destroy();
+  transport = host(code, {
+    onCodeChange: (c) => {
+      // kabari tab receiver supaya QR & kode selalu sinkron
+      bc.postMessage({ v: 1, type: 'code', from: 'viewer', payload: { code: c } });
+    },
+    onOpen: () => {
+      setLoadedStatus(`✓ Remote aktif — siap menerima HP`);
+      publishState();
+    },
+    onPeerJoin: (id) => {
+      console.log('[Viewer] HP connected:', id);
+      setLoadedStatus(`✓ HP terhubung (${id.slice(-4)})`);
+      publishState();
+    },
+    onPeerLeave: () => setLoadedStatus('⚠ HP terputus, menunggu sambungan ulang...'),
+    onMessage: (msg, reply) => {
+      if (msg.type === 'cmd' && isAction(msg.payload.action)) {
+        applyRemoteAction(msg.payload.action, msg.payload);
+      } else if (msg.type === 'hello') {
+        // HP memperkenalkan diri → balas dengan state terkini
+        reply(makeMessage('state', 'viewer', remoteState()));
+      }
+    },
+    onError: (err) => console.error('[Viewer] transport error:', err),
+    onStatus: (t) => console.log('[Viewer] transport:', t),
+  });
+}
+
+// Dukungan relay: pesan yang diteruskan tab receiver (kasus viewer
+// dibuka setelah HP connect ke receiver) tetap dieksekusi di sini.
+bc.onmessage = (e) => {
+  const msg = e.data;
+  if (!msg || msg.from === 'viewer') return;
+  if (msg.type === 'cmd' && isAction(msg.payload?.action)) {
+    applyRemoteAction(msg.payload.action, msg.payload);
+  } else if (msg.type === 'request-code') {
+    // receiver baru dibuka → kirimi kode aktif kita
+    bc.postMessage({ v: 1, type: 'code', from: 'viewer', payload: { code: transport ? transport.code : null } });
+  }
 };
+
+// Kode awal dari ?room=XXXXXX (agar bisa "recovery": buka viewer.html?room=...
+// untuk menyambung kembali sesi yang kodenya diketahui HP), selain itu acak.
+const initialCode = new URLSearchParams(location.search).get('room');
+startHost(/^\d{6}$/.test(initialCode || '') ? initialCode : undefined);
+
+// Publish state saat navigasi lokal (keyboard/tombol) terjadi juga.
+document.addEventListener('fullscreenchange', publishState);
 
 // ============================================================
 // INIT
