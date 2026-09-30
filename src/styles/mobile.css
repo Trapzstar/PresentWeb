@@ -1,0 +1,187 @@
+/* ============================================================
+   Halaman mobile.html — Remote presenter (UX prioritas utama)
+   Prinsip: target sentuh ≥ 64px, satu tangan, aman saat layar
+   terkunci/berpindah sinyal. Mengikuti design tokens neumorphic.
+   ============================================================ */
+
+.page-mobile {
+  overscroll-behavior: none; /* cegah pull-to-refresh saat swipe slide */
+}
+
+.page-mobile #app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+  padding: calc(var(--space-5) + env(safe-area-inset-top)) var(--space-5)
+           calc(var(--space-5) + env(safe-area-inset-bottom));
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  box-sizing: border-box;
+}
+
+.page-mobile h1 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+/* ---------- Info room ---------- */
+.page-mobile .room-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--bg-sunken);
+  box-shadow: var(--shadow-in);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-5);
+}
+
+.page-mobile .room-info .label {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-muted);
+}
+
+.page-mobile .room-info .value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  letter-spacing: 4px;
+  color: var(--text);
+}
+
+/* ---------- Status koneksi ---------- */
+.page-mobile .status {
+  width: 100%;
+  text-align: center;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-out-sm);
+  padding: var(--space-3) var(--space-4);
+  transition: color var(--duration-base) var(--ease-out),
+              box-shadow var(--duration-base) var(--ease-out);
+}
+
+.page-mobile .status.ok  { color: #0E9F6E; box-shadow: var(--shadow-out-sm), inset 0 0 0 1px rgba(52,211,153,.35); }
+.page-mobile .status.err { color: var(--danger); box-shadow: var(--shadow-out-sm), inset 0 0 0 1px rgba(255,92,92,.35); }
+
+/* ---------- Progress slide dari PC ---------- */
+.page-mobile .progress-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.page-mobile .slide-info {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.page-mobile .progress {
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  box-shadow: var(--shadow-in);
+  overflow: hidden;
+}
+
+.page-mobile .progress .bar {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-shadow);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+
+/* ---------- Kontrol navigasi ---------- */
+.page-mobile .controls {
+  width: 100%;
+  display: flex;
+  gap: var(--space-4);
+  justify-content: center;
+}
+
+.page-mobile .btn-nav {
+  flex: 1;
+  max-width: 180px;
+  min-height: 96px;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-out);
+  color: var(--text);
+  font-size: 40px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+  transition: transform var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.page-mobile .btn-nav:active {
+  transform: scale(0.96);
+  box-shadow: var(--shadow-in);
+}
+
+/* ---------- Tombol aksi ---------- */
+.page-mobile .btn-action {
+  flex: 1;
+  min-height: 64px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-out-sm);
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: transform var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out),
+              opacity var(--duration-base);
+}
+
+.page-mobile .btn-action:active { transform: scale(0.97); box-shadow: var(--shadow-in); }
+.page-mobile .btn-action.primary { background: var(--accent); color: var(--accent-text); box-shadow: var(--shadow-out-sm), 0 6px 16px var(--accent-shadow); }
+.page-mobile .btn-action.danger  { color: var(--danger); }
+.page-mobile .btn-action:disabled { opacity: 0.4; box-shadow: var(--shadow-out-xs); cursor: default; }
+
+/* ---------- Hint swipe ---------- */
+.page-mobile .swipe-hint {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  animation: pe-fade 2.4s var(--ease-out) infinite alternate;
+}
+
+@keyframes pe-fade { from { opacity: .45; } to { opacity: 1; } }
+
+/* ---------- Log ---------- */
+.page-mobile .log {
+  width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-in);
+  padding: var(--space-3);
+}

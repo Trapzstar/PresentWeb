@@ -226,3 +226,12 @@
   box-shadow: var(--shadow-in);
   transform: scale(0.98);
 }
+/* ---------- Blackout overlay (remote: "layar hitam") ---------- */
+#viewer { position: relative; }
+.blackout-overlay {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  z-index: 50;
+  cursor: pointer;
+}
