@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#ECF0F3">
+  <title>Remote — presentExs</title>
+</head>
+<body class="page-mobile">
+  <div id="app">
+    <h1>Remote Control</h1>
+
+    <div class="room-info">
+      <span class="label">Room</span>
+      <span class="value" id="roomLabel">------</span>
+    </div>
+
+    <div class="status" id="status">Menghubungkan...</div>
+
+    <div class="controls" id="controls" style="display:none;">
+      <button class="btn-nav" id="btnPrev" aria-label="Previous">←</button>
+      <button class="btn-nav" id="btnNext" aria-label="Next">→</button>
+    </div>
+
+    <div class="controls">
+      <button class="btn-action primary" id="btnPresent">Mulai</button>
+      <button class="btn-action danger" id="btnExit">Keluar</button>
+    </div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <script type="module" src="/src/mobile.js"></script>
+</body>
+</html>

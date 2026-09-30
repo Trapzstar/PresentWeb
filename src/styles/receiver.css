@@ -1,0 +1,52 @@
+/* Halaman receiver.html — QR & room code */
+.page-receiver #app {
+  text-align: center;
+  padding: 20px;
+}
+
+.page-receiver .code-box {
+  background: var(--ink);
+  color: #fff;
+  padding: 20px 32px;
+  border-radius: 12px;
+  margin: 20px auto;
+  display: inline-block;
+}
+
+.page-receiver .code-box .label {
+  font-size: 12px;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.page-receiver .code-box .code {
+  font-family: 'Courier New', monospace;
+  font-size: 42px;
+  font-weight: 700;
+  letter-spacing: 8px;
+  color: var(--accent);
+  margin-top: 4px;
+}
+
+.page-receiver #qrCanvas {
+  display: block;
+  margin: 20px auto;
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+}
+
+.page-receiver .status {
+  margin-top: 20px;
+}
+
+.page-receiver .log {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  text-align: left;
+  max-width: 500px;
+  margin: 20px auto;
+  white-space: pre-wrap;
+  color: var(--muted);
+}

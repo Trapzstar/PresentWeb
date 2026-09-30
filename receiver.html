@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote HP — presentExs</title>
+</head>
+<body class="page-receiver">
+  <div id="app">
+    <h1>Remote HP</h1>
+
+    <div class="code-box">
+      <div class="label">Kode Room</div>
+      <div class="code" id="roomCode">------</div>
+    </div>
+
+    <canvas id="qrCanvas"></canvas>
+
+    <div class="status" id="status">Memuat...</div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <script type="module" src="/src/receiver.js"></script>
+</body>
+</html>
